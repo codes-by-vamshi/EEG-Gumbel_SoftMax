@@ -104,7 +104,7 @@ class SelectionLayer(nn.Module):
 
 		g = -torch.log(-torch.log(x))
 		y = (qz_loga + g) / self.temperature
-		y = torch.softmax(y, dim=-1)
+		y = torch.softmax(y, dim=1)
 
 		return y
 
@@ -268,12 +268,19 @@ class SelectionNet(nn.Module):
 
 		m = self.selection_layer
 		eps = 1e-10
-		#Probability distributions
-		z = torch.clamp(torch.softmax(m.qz_loga,dim=0),eps,1)
-		#Normalized entropy
-		H = - torch.sum(z*torch.log(z),dim=0)/math.log(self.N)
-		#Selections
-		s = torch.argmax(m.qz_loga,dim=0)+1
+		q = m.qz_loga
+		if q.ndim == 2:
+			# q: (N, M) -> softmax over channels (dim=0)
+			z = torch.clamp(torch.softmax(q, dim=0), eps, 1)
+			H = - torch.sum(z * torch.log(z), dim=0) / math.log(self.N)  # (M,)
+			s = torch.argmax(q, dim=0) + 1                               # (M,)
+		elif q.ndim == 3:
+			# q: (S, N, M) -> softmax over channels (dim=1)
+			z = torch.clamp(torch.softmax(q, dim=1), eps, 1)
+			H = - torch.sum(z * torch.log(z), dim=1) / math.log(self.N)  # (S, M)
+			s = torch.argmax(q, dim=1) + 1                               # (S, M)
+		else:
+			raise ValueError(f"unexpected qz_loga ndim={q.ndim}, shape={tuple(q.shape)}")
 
 		return H,s,z
 
