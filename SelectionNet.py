@@ -20,14 +20,13 @@ def init_weights(m):
 		torch.nn.init.xavier_uniform_(m.weight)
 
 class MSFBCNN(nn.Module):
-	def __init__(self,input_dim,output_dim,FT=10):
+	def __init__(self,input_dim,FT=10):
 		super(MSFBCNN, self).__init__()
 		self.T = input_dim[1]
 		self.FT = FT
 		self.D = 1
 		self.FS = self.FT*self.D
 		self.C=input_dim[0]
-		self.output_dim = output_dim
 		
 		# Parallel temporal convolutions
 		self.conv1a = nn.Conv2d(1, self.FT, (1, 25), padding = (0,12),bias=False)
@@ -45,9 +44,9 @@ class MSFBCNN(nn.Module):
 
 		self.drop=nn.Dropout(0.5)
 
-		#Classification
+		#Feature size (classifier is handled outside this module)
 		pool_out = math.floor((self.T - 75) / 15) + 1
-		self.fc1 = nn.Linear(self.FS * pool_out, self.output_dim)
+		self.feature_dim = self.FS * pool_out
 
 	def forward(self, x):
 
@@ -66,9 +65,8 @@ class MSFBCNN(nn.Module):
 		x = torch.log(x)
 		x = self.drop(x)
 		
-		# FC Layer
+		# Flatten features
 		x = x.view(-1, self.num_flat_features(x))
-		x = self.fc1(x)
 		return x
 
 	def num_flat_features(self, x):
@@ -144,7 +142,8 @@ class SelectionLayer(nn.Module):
 
 class SelectionNet(nn.Module):
 	
-	def __init__(self,input_dim,M,output_dim=4):
+	def __init__(self,input_dim,M,output_dim=4,
+				 use_subject_embedding=False, n_subjects=None, subject_embed_dim=0):
 		super(SelectionNet,self).__init__()
 		self.floatTensor = torch.FloatTensor if not torch.cuda.is_available() else torch.cuda.FloatTensor
 
@@ -153,18 +152,39 @@ class SelectionNet(nn.Module):
 		self.M = M
 		self.input_dim = input_dim
 		self.output_dim = output_dim
+		self.use_subject_embedding = use_subject_embedding
 			
-		self.network = MSFBCNN(input_dim=[self.M,self.T],output_dim=output_dim)
+		self.network = MSFBCNN(input_dim=[self.M,self.T])
 
 		self.selection_layer = SelectionLayer(self.N,self.M)
+
+		if self.use_subject_embedding:
+			if n_subjects is None or n_subjects <= 0:
+				raise ValueError("use_subject_embedding=True requires n_subjects > 0")
+			if subject_embed_dim is None or subject_embed_dim <= 0:
+				raise ValueError("use_subject_embedding=True requires subject_embed_dim > 0")
+			self.subject_embedding = nn.Embedding(int(n_subjects), int(subject_embed_dim))
+			classifier_in = int(self.network.feature_dim) + int(subject_embed_dim)
+		else:
+			self.subject_embedding = None
+			classifier_in = int(self.network.feature_dim)
+		self.classifier = nn.Linear(classifier_in, self.output_dim)
 
 		self.layers = self.create_layers_field()
 		self.apply(init_weights)
 
-	def forward(self,x):
+	def forward(self,x,subject_ids=None):
 
 		y_selected = self.selection_layer(x)
-		out = self.network(y_selected)    
+		features = self.network(y_selected)
+
+		if self.use_subject_embedding:
+			if subject_ids is None:
+				raise ValueError("subject_ids must be provided when use_subject_embedding=True")
+			emb = self.subject_embedding(subject_ids)
+			out = self.classifier(torch.cat([features, emb], dim=1))
+		else:
+			out = self.classifier(features)
 
 		return out
 

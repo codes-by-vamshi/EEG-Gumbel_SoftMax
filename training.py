@@ -6,9 +6,15 @@ from SelectionNet import SelectionNet
 import config as cfg
 
 
-def _build(N, T, K, n_classes, lr, device):
+def _build(N, T, K, n_classes, lr, device,
+           use_subject_embedding=False, n_subjects=None, subject_embed_dim=0):
     """Model + optimizer with the selection layer on a boosted LR."""
-    model = SelectionNet([N, T], K, output_dim=n_classes).to(device)
+    model = SelectionNet(
+        [N, T], K, output_dim=n_classes,
+        use_subject_embedding=use_subject_embedding,
+        n_subjects=n_subjects,
+        subject_embed_dim=subject_embed_dim,
+    ).to(device)
     model.set_freeze(False)
     sel_params = list(model.selection_layer.parameters())
     sel_ids = {id(p) for p in sel_params}
@@ -20,34 +26,49 @@ def _build(N, T, K, n_classes, lr, device):
     return model, opt
 
 
-def _loader(X, y, shuffle=True):
-    ds = torch.utils.data.TensorDataset(
-        torch.as_tensor(X).unsqueeze(1),                  # (n, 1, N, T)
-        torch.as_tensor(y, dtype=torch.long))
+def _loader(X, y, subj=None, shuffle=True):
+    X_t = torch.as_tensor(X).unsqueeze(1)                 # (n, 1, N, T)
+    y_t = torch.as_tensor(y, dtype=torch.long)
+    if subj is None:
+        ds = torch.utils.data.TensorDataset(X_t, y_t)
+    else:
+        subj_t = torch.as_tensor(subj, dtype=torch.long)
+        ds = torch.utils.data.TensorDataset(X_t, y_t, subj_t)
     return torch.utils.data.DataLoader(ds, batch_size=cfg.FIXED['batch_size'],
                                        shuffle=shuffle)
 
 
 @torch.no_grad()
-def _evaluate(model, X, y, device):
+def _evaluate(model, X, y, device, subj=None):
     model.eval()
     Xt = torch.as_tensor(X).unsqueeze(1).to(device)
     yt = torch.as_tensor(y, dtype=torch.long).to(device)
-    out = model(Xt)
+    if subj is None:
+        out = model(Xt)
+    else:
+        subjt = torch.as_tensor(subj, dtype=torch.long).to(device)
+        out = model(Xt, subject_ids=subjt)
     loss = torch.nn.functional.cross_entropy(out, yt).item()
     pred = out.argmax(1)
     acc = (pred == yt).float().mean().item()
     return acc, loss, pred.cpu().numpy()
 
 def train_one_fold(X_tr, y_tr, X_va, y_va, K, n_classes, hp,
-                   temp_sched, thresh_sched, device, seed):
+                   temp_sched, thresh_sched, device, seed,
+                   subj_tr=None, subj_va=None,
+                   use_subject_embedding=False, n_subjects=None, subject_embed_dim=0):
     """Train one SelectionNet on a fold. Returns (val_acc, mean_entropy, n_unique)."""
     torch.manual_seed(seed)
     N, T = X_tr.shape[1], X_tr.shape[2]
 
-    model, opt = _build(N, T, K, n_classes, hp['lr'], device)
+    model, opt = _build(
+        N, T, K, n_classes, hp['lr'], device,
+        use_subject_embedding=use_subject_embedding,
+        n_subjects=n_subjects,
+        subject_embed_dim=subject_embed_dim,
+    )
     ce = torch.nn.CrossEntropyLoss()
-    tr_loader = _loader(X_tr, y_tr)
+    tr_loader = _loader(X_tr, y_tr, subj=subj_tr)
 
     prev_val = 1e9
     patience = 0
@@ -59,16 +80,22 @@ def train_one_fold(X_tr, y_tr, X_va, y_va, K, n_classes, hp,
 
         # ---- train ----
         model.train()
-        for data, labels in tr_loader:
+        for batch in tr_loader:
+            if len(batch) == 2:
+                data, labels = batch
+                subj = None
+            else:
+                data, labels, subj = batch
+                subj = subj.to(device)
             data, labels = data.to(device), labels.to(device)
             opt.zero_grad()
-            sup = ce(model(data), labels)
+            sup = ce(model(data) if subj is None else model(data, subject_ids=subj), labels)
             reg = model.regularizer(hp['lamba'], hp['weight_decay'])
             (sup + reg).backward()
             opt.step()
 
         # ---- validate ----
-        val_acc, val_loss, _ = _evaluate(model, X_va, y_va, device)
+        val_acc, val_loss, _ = _evaluate(model, X_va, y_va, device, subj=subj_va)
         mean_H = model.monitor()[0].mean().item()
 
         # ---- early stopping: only once selection has converged ----
@@ -86,34 +113,47 @@ def train_one_fold(X_tr, y_tr, X_va, y_va, K, n_classes, hp,
         model.load_state_dict(best_state)
 
     # ---- final fold metrics ----
-    val_acc, _, _ = _evaluate(model, X_va, y_va, device)
+    val_acc, _, _ = _evaluate(model, X_va, y_va, device, subj=subj_va)
     H, s, _ = model.monitor()
     return val_acc, H.mean().item(), int(torch.unique(s - 1).numel())
 
 def train_final(X_tr, y_tr, X_te, y_te, K, n_classes, hp,
-                temp_sched, thresh_sched, device, seed):
+                temp_sched, thresh_sched, device, seed,
+                subj_tr=None, subj_te=None,
+                use_subject_embedding=False, n_subjects=None, subject_embed_dim=0):
     """Full-length training on trainval, no early stopping. Returns a dict."""
     torch.manual_seed(seed)
     N, T = X_tr.shape[1], X_tr.shape[2]
 
-    model, opt = _build(N, T, K, n_classes, hp['lr'], device)
+    model, opt = _build(
+        N, T, K, n_classes, hp['lr'], device,
+        use_subject_embedding=use_subject_embedding,
+        n_subjects=n_subjects,
+        subject_embed_dim=subject_embed_dim,
+    )
     ce = torch.nn.CrossEntropyLoss()
-    tr_loader = _loader(X_tr, y_tr)
+    tr_loader = _loader(X_tr, y_tr, subj=subj_tr)
 
     for epoch in range(cfg.MAX_EPOCHS):
         model.set_temperature(temp_sched[epoch].to(device))
         model.set_thresh(thresh_sched[epoch])
         model.train()
-        for data, labels in tr_loader:
+        for batch in tr_loader:
+            if len(batch) == 2:
+                data, labels = batch
+                subj = None
+            else:
+                data, labels, subj = batch
+                subj = subj.to(device)
             data, labels = data.to(device), labels.to(device)
             opt.zero_grad()
-            loss = ce(model(data), labels) + model.regularizer(hp['lamba'],
-                                                               hp['weight_decay'])
+            out = model(data) if subj is None else model(data, subject_ids=subj)
+            loss = ce(out, labels) + model.regularizer(hp['lamba'], hp['weight_decay'])
             loss.backward()
             opt.step()
 
-    train_acc, _, _ = _evaluate(model, X_tr, y_tr, device)
-    test_acc, _, te_pred = _evaluate(model, X_te, y_te, device)
+    train_acc, _, _ = _evaluate(model, X_tr, y_tr, device, subj=subj_tr)
+    test_acc, _, te_pred = _evaluate(model, X_te, y_te, device, subj=subj_te)
 
     H, sel, _ = model.monitor()
     channels = sorted(int(c) for c in torch.unique(sel - 1).cpu().numpy())

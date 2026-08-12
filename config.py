@@ -13,6 +13,7 @@ EXPECT_CHANNELS = 118
 
 # Set True when using subject embeddings (i.e. multi-subject data)
 use_subject_embedding = False
+SUBJECT_EMBED_DIM = 4
 
 # Channel Budget for the Gumbel-Softmax model
 DEFAULT_K = 8
