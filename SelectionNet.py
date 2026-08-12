@@ -78,31 +78,45 @@ class MSFBCNN(nn.Module):
 
 
 class SelectionLayer(nn.Module):
-	def __init__(self, N,M,temperature=1.0):
+	def __init__(self, N, M, temperature=1.0, subject_specific=False, n_subjects=None):
 
 		super(SelectionLayer, self).__init__()
 		self.floatTensor = torch.FloatTensor if not torch.cuda.is_available() else torch.cuda.FloatTensor
 		self.N = N
 		self.M = M
-		self.qz_loga = Parameter(torch.randn(N,M)/100)
+		self.subject_specific = subject_specific
+		if self.subject_specific:
+			if n_subjects is None or n_subjects <= 0:
+				raise ValueError("subject_specific=True requires n_subjects > 0")
+			self.n_subjects = int(n_subjects)
+			self.qz_loga = Parameter(torch.randn(self.n_subjects, N, M) / 100)
+		else:
+			self.n_subjects = None
+			self.qz_loga = Parameter(torch.randn(N, M) / 100)
 
 		self.temperature=self.floatTensor([temperature])
 		self.freeze=False
 		self.thresh=3.0
 
-	def quantile_concrete(self, x):
+	def quantile_concrete(self, x, qz_loga=None):
+		if qz_loga is None:
+			qz_loga = self.qz_loga
 
 		g = -torch.log(-torch.log(x))
-		y = (self.qz_loga+g)/self.temperature
-		y = torch.softmax(y,dim=1)
+		y = (qz_loga + g) / self.temperature
+		y = torch.softmax(y, dim=-1)
 
 		return y
 
 	def regularization(self):
 		
 		eps = 1e-10
-		z = torch.clamp(torch.softmax(self.qz_loga,dim=0),eps,1)
-		H = torch.sum(F.relu(torch.norm(z,1,dim=1)-self.thresh))
+		if self.subject_specific:
+			z = torch.clamp(torch.softmax(self.qz_loga, dim=1), eps, 1)
+			H = torch.sum(F.relu(torch.norm(z, 1, dim=2) - self.thresh))
+		else:
+			z = torch.clamp(torch.softmax(self.qz_loga,dim=0),eps,1)
+			H = torch.sum(F.relu(torch.norm(z,1,dim=1)-self.thresh))
 
 		return H
 
@@ -112,30 +126,45 @@ class SelectionLayer(nn.Module):
 
 		return eps
 
-	def sample_z(self, batch_size, training):
+	def sample_z(self, batch_size, training, subject_ids=None):
 
 		if training:
 
 			eps = self.get_eps(self.floatTensor(batch_size, self.N, self.M))
-			z = self.quantile_concrete(eps)
+			if self.subject_specific:
+				if subject_ids is None:
+					raise ValueError("subject_ids must be provided when subject_specific=True")
+				qz = self.qz_loga[subject_ids.long()]
+				z = self.quantile_concrete(eps, qz_loga=qz)
+			else:
+				z = self.quantile_concrete(eps)
 			z=z.view(z.size(0),1,z.size(1),z.size(2))
 	 
 			return z
 
 		else:
 
-			ind = torch.argmax(self.qz_loga,dim=0)
-			one_hot = self.floatTensor(np.zeros((self.N,self.M)))
-			for j in range(self.M):
-					one_hot[ind[j],j]=1
-			one_hot=one_hot.view(1,1,one_hot.size(0),one_hot.size(1))
-			one_hot = one_hot.expand(batch_size,1,one_hot.size(2),one_hot.size(3))
+			if self.subject_specific:
+				if subject_ids is None:
+					raise ValueError("subject_ids must be provided when subject_specific=True")
+				qz = self.qz_loga[subject_ids.long()]                    # (B, N, M)
+				ind = torch.argmax(qz, dim=1)                            # (B, M)
+				one_hot = torch.zeros((batch_size, self.N, self.M), device=qz.device, dtype=qz.dtype)
+				one_hot.scatter_(1, ind.unsqueeze(1), 1.0)
+				one_hot = one_hot.view(batch_size, 1, self.N, self.M)
+			else:
+				ind = torch.argmax(self.qz_loga,dim=0)
+				one_hot = self.floatTensor(np.zeros((self.N,self.M)))
+				for j in range(self.M):
+						one_hot[ind[j],j]=1
+				one_hot=one_hot.view(1,1,one_hot.size(0),one_hot.size(1))
+				one_hot = one_hot.expand(batch_size,1,one_hot.size(2),one_hot.size(3))
 
 			return one_hot
 
-	def forward(self, x):
+	def forward(self, x, subject_ids=None):
 
-		z = self.sample_z(x.size(0),training=(self.training and not self.freeze))
+		z = self.sample_z(x.size(0), training=(self.training and not self.freeze), subject_ids=subject_ids)
 		z_t = torch.transpose(z,2,3)
 		out = torch.matmul(z_t,x)
 		return out
@@ -143,7 +172,8 @@ class SelectionLayer(nn.Module):
 class SelectionNet(nn.Module):
 	
 	def __init__(self,input_dim,M,output_dim=4,
-				 use_subject_embedding=False, n_subjects=None, subject_embed_dim=0):
+				 use_subject_embedding=False, n_subjects=None, subject_embed_dim=0,
+				 use_subject_specific_selection=False):
 		super(SelectionNet,self).__init__()
 		self.floatTensor = torch.FloatTensor if not torch.cuda.is_available() else torch.cuda.FloatTensor
 
@@ -156,7 +186,11 @@ class SelectionNet(nn.Module):
 			
 		self.network = MSFBCNN(input_dim=[self.M,self.T])
 
-		self.selection_layer = SelectionLayer(self.N,self.M)
+		self.selection_layer = SelectionLayer(
+			self.N, self.M,
+			subject_specific=use_subject_specific_selection,
+			n_subjects=n_subjects if use_subject_specific_selection else None,
+		)
 
 		if self.use_subject_embedding:
 			if n_subjects is None or n_subjects <= 0:
@@ -175,7 +209,7 @@ class SelectionNet(nn.Module):
 
 	def forward(self,x,subject_ids=None):
 
-		y_selected = self.selection_layer(x)
+		y_selected = self.selection_layer(x, subject_ids=subject_ids)
 		features = self.network(y_selected)
 
 		if self.use_subject_embedding:

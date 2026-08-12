@@ -14,6 +14,9 @@ EXPECT_CHANNELS = 118
 # Set True when using subject embeddings (i.e. multi-subject data)
 use_subject_embedding = False
 SUBJECT_EMBED_DIM = 4
+# When using subject embeddings, optionally learn a separate selector (qz_loga) per subject.
+# If False, the selector is shared across all subjects (one global set of selected channels).
+use_subject_specific_selection = False
 
 # Channel Budget for the Gumbel-Softmax model
 DEFAULT_K = 8

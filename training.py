@@ -7,13 +7,15 @@ import config as cfg
 
 
 def _build(N, T, K, n_classes, lr, device,
-           use_subject_embedding=False, n_subjects=None, subject_embed_dim=0):
+           use_subject_embedding=False, n_subjects=None, subject_embed_dim=0,
+           use_subject_specific_selection=False):
     """Model + optimizer with the selection layer on a boosted LR."""
     model = SelectionNet(
         [N, T], K, output_dim=n_classes,
         use_subject_embedding=use_subject_embedding,
         n_subjects=n_subjects,
         subject_embed_dim=subject_embed_dim,
+        use_subject_specific_selection=use_subject_specific_selection,
     ).to(device)
     model.set_freeze(False)
     sel_params = list(model.selection_layer.parameters())
@@ -56,7 +58,8 @@ def _evaluate(model, X, y, device, subj=None):
 def train_one_fold(X_tr, y_tr, X_va, y_va, K, n_classes, hp,
                    temp_sched, thresh_sched, device, seed,
                    subj_tr=None, subj_va=None,
-                   use_subject_embedding=False, n_subjects=None, subject_embed_dim=0):
+                   use_subject_embedding=False, n_subjects=None, subject_embed_dim=0,
+                   use_subject_specific_selection=False):
     """Train one SelectionNet on a fold. Returns (val_acc, mean_entropy, n_unique)."""
     torch.manual_seed(seed)
     N, T = X_tr.shape[1], X_tr.shape[2]
@@ -66,6 +69,7 @@ def train_one_fold(X_tr, y_tr, X_va, y_va, K, n_classes, hp,
         use_subject_embedding=use_subject_embedding,
         n_subjects=n_subjects,
         subject_embed_dim=subject_embed_dim,
+        use_subject_specific_selection=use_subject_specific_selection,
     )
     ce = torch.nn.CrossEntropyLoss()
     tr_loader = _loader(X_tr, y_tr, subj=subj_tr)
@@ -120,7 +124,8 @@ def train_one_fold(X_tr, y_tr, X_va, y_va, K, n_classes, hp,
 def train_final(X_tr, y_tr, X_te, y_te, K, n_classes, hp,
                 temp_sched, thresh_sched, device, seed,
                 subj_tr=None, subj_te=None,
-                use_subject_embedding=False, n_subjects=None, subject_embed_dim=0):
+                use_subject_embedding=False, n_subjects=None, subject_embed_dim=0,
+                use_subject_specific_selection=False):
     """Full-length training on trainval, no early stopping. Returns a dict."""
     torch.manual_seed(seed)
     N, T = X_tr.shape[1], X_tr.shape[2]
@@ -130,6 +135,7 @@ def train_final(X_tr, y_tr, X_te, y_te, K, n_classes, hp,
         use_subject_embedding=use_subject_embedding,
         n_subjects=n_subjects,
         subject_embed_dim=subject_embed_dim,
+        use_subject_specific_selection=use_subject_specific_selection,
     )
     ce = torch.nn.CrossEntropyLoss()
     tr_loader = _loader(X_tr, y_tr, subj=subj_tr)

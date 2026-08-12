@@ -175,6 +175,7 @@ def process_multi_subjects(loaded_raw, K_channels, subject='ALL'):
                     use_subject_embedding=True,
                     n_subjects=len(subject_to_id),
                     subject_embed_dim=cfg.SUBJECT_EMBED_DIM,
+                    use_subject_specific_selection=cfg.use_subject_specific_selection,
                 )
                 accs.append(val_acc)
                 entropies.append(mean_H)
@@ -231,6 +232,7 @@ def process_multi_subjects(loaded_raw, K_channels, subject='ALL'):
         use_subject_embedding=True,
         n_subjects=len(subject_to_id),
         subject_embed_dim=cfg.SUBJECT_EMBED_DIM,
+        use_subject_specific_selection=cfg.use_subject_specific_selection,
     )
 
     print(f'{log}[test] init {cfg.INIT_SEED}: train_acc={res["train_acc"]:.3f} '
