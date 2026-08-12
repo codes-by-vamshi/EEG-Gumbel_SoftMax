@@ -44,6 +44,9 @@ pip install numpy scipy scikit-learn torch
 
 1) Edit `config.py` to point to your data:
 - Set **either** `DATA_ROOT` (multi-subject) **or** `X_PATH` + `Y_PATH` (single dataset).
+- If using `DATA_ROOT`:
+  - `use_subject_embedding = False` trains **one model per subject** (current default behavior).
+  - `use_subject_embedding = True` trains **one global model** across all subjects, using a learned subject embedding.
 
 2) Start training:
 ```
@@ -57,6 +60,8 @@ If you don’t have a GPU, set `device = "cpu"` in `config.py` (the code also fa
 - `DEFAULT_K`: number of channels to select (`M`).
 - `SUBJECTS_BUDGET`: optional per-subject `K` override when using `DATA_ROOT`.
 - `EXPECT_CHANNELS`: set to the expected number of channels to catch transposed inputs early.
+- `use_subject_embedding`: when `True` (and using `DATA_ROOT`), trains a single model on all subjects and concatenates a learned subject embedding before the classifier.
+- `SUBJECT_EMBED_DIM`: subject embedding dimension used when `use_subject_embedding = True`.
 - `SPLIT_SEED`: controls train/test split + CV folds (kept constant so CV cache is reusable).
 - `INIT_SEED`: controls weight initialization for the final training run.
 - `GRID`: hyperparameter grid searched in CV (`lr`, `lamba`, `weight_decay`).
@@ -67,6 +72,8 @@ If you don’t have a GPU, set `device = "cpu"` in `config.py` (the code also fa
 Runs write JSON files to `results/`:
 - `cv_<dataset>_M<K>_split<SPLIT_SEED>.json`: CV results (cached per split).
 - `run_<dataset>_M<K>_split<SPLIT_SEED>_init<INIT_SEED>.json`: final run metrics.
+
+When `use_subject_embedding = True` (global multi-subject run), output filenames use `ALL` as the dataset identifier.
 
 The final run JSON includes:
 - `train_acc`, `test_acc`
@@ -81,4 +88,3 @@ The final run JSON includes:
 - `training.py`: fold training + final training routines
 - `SelectionNet.py`: SelectionNet (Gumbel-Softmax selection layer + MSFBCNN)
 - `train_utils.py`: schedules, standardization, grid helpers
-
