@@ -2,6 +2,7 @@ from pathlib import Path
 import numpy as np
 import config as cfg
 import torch
+from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import train_test_split, StratifiedKFold
 from train_utils import exp_decay, standardize, grid_combos, print_confusion_matrix
 import json
@@ -245,6 +246,36 @@ def process_multi_subjects(loaded_raw, K_channels, subject='ALL'):
     print_confusion_matrix(res['confusion_matrix'], labels=list(range(n_classes)), prefix=log)
     print(f'{log}selected channels: {res["selected_channels"]}')
 
+    # ---------------- per-subject test metrics ----------------------------
+    @torch.no_grad()
+    def _predict(model, X, subj_ids, batch_size=128):
+        Xt = torch.as_tensor(X).unsqueeze(1)
+        st = torch.as_tensor(subj_ids, dtype=torch.long)
+        preds = []
+        for start in range(0, len(X), batch_size):
+            end = min(start + batch_size, len(X))
+            xb = Xt[start:end].to(device)
+            sb = st[start:end].to(device)
+            out = model(xb, subject_ids=sb)
+            preds.append(out.argmax(1).cpu().numpy())
+        return np.concatenate(preds, axis=0)
+
+    te_pred = _predict(model, Xte_full, subj_test)
+    per_subject_test = {}
+    id_to_subject = {i: s for s, i in subject_to_id.items()}
+    for sid in sorted(id_to_subject.keys()):
+        sname = id_to_subject[sid]
+        idx = np.flatnonzero(subj_test == sid)
+        y_s = y_test[idx]
+        p_s = te_pred[idx]
+        per_subject_test[sname] = {
+            'subject_id': int(sid),
+            'n_test': int(len(idx)),
+            'test_acc': float(np.mean(p_s == y_s)) if len(idx) else None,
+            'confusion_matrix': confusion_matrix(y_s, p_s, labels=list(range(n_classes))).tolist()
+            if len(idx) else None,
+        }
+
     result = {
         'subject': subject,
         'subjects': [s for s, _, _ in loaded],
@@ -259,6 +290,7 @@ def process_multi_subjects(loaded_raw, K_channels, subject='ALL'):
         'n_train': int(len(y_trainval)),
         'n_test': int(len(y_test)),
         'n_subjects': int(len(subject_to_id)),
+        'per_subject_test': per_subject_test,
         **res,
     }
     json.dump(result, open(result_path, 'w'), indent=2)
