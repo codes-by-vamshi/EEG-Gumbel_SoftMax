@@ -125,8 +125,9 @@ def train_final(X_tr, y_tr, X_te, y_te, K, n_classes, hp,
                 temp_sched, thresh_sched, device, seed,
                 subj_tr=None, subj_te=None,
                 use_subject_embedding=False, n_subjects=None, subject_embed_dim=0,
-                use_subject_specific_selection=False):
-    """Full-length training on trainval, no early stopping. Returns a dict."""
+                use_subject_specific_selection=False,
+                return_model=False):
+    """Full-length training on trainval, no early stopping. Returns a dict (and optionally the model)."""
     torch.manual_seed(seed)
     N, T = X_tr.shape[1], X_tr.shape[2]
 
@@ -172,4 +173,4 @@ def train_final(X_tr, y_tr, X_te, y_te, K, n_classes, hp,
         'n_unique': len(channels),
         'mean_entropy': H.mean().item(),
         'confusion_matrix': cm.tolist(),
-    }
+    }, model if return_model else None

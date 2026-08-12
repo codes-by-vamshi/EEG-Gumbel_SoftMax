@@ -51,12 +51,15 @@ def check_data(X, y, K, subject=None):
         raise ValueError(f"{who}: K={K} exceeds n_channels={N}")
 
 def out_paths(subject, K):
-    """(cv_cache, result) — CV is keyed by split only, so inits share it."""
+    """(cv_cache, result, checkpoint) — CV is keyed by split only, so inits share it."""
     Path(cfg.OUT_DIR).mkdir(parents=True, exist_ok=True)
     base = (f'{subject}_M{K}_split{cfg.SPLIT_SEED}' if subject
         else f'{cfg.DATASET_TAG}_M{K}_split{cfg.SPLIT_SEED}')
-    return (Path(cfg.OUT_DIR) / f'cv_{base}.json',
-            Path(cfg.OUT_DIR) / f'run_{base}_init{cfg.INIT_SEED}.json')
+    return (
+        Path(cfg.OUT_DIR) / f'cv_{base}.json',
+        Path(cfg.OUT_DIR) / f'run_{base}_init{cfg.INIT_SEED}.json',
+        Path(cfg.OUT_DIR) / f'model_{base}_init{cfg.INIT_SEED}.pt',
+    )
 
 def _subjectwise_split_and_concat(loaded, test_size, seed):
     """
@@ -134,7 +137,7 @@ def process_multi_subjects(loaded_raw, K_channels, subject='ALL'):
         loaded.append((subject_name, X, y_mapped.astype(np.int64)))
 
     n_classes = len(classes)
-    cv_path, result_path = out_paths(subject, K_channels)
+    cv_path, result_path, ckpt_path = out_paths(subject, K_channels)
 
     (X_trainval, y_trainval, subj_trainval,
      X_test, y_test, subj_test,
@@ -221,9 +224,9 @@ def process_multi_subjects(loaded_raw, K_channels, subject='ALL'):
               f'selection may not have converged')
 
     # ---------------- final model at INIT_SEED ----------------------------
-    Xtr_full, Xte_full, _, _ = standardize(X_trainval, X_test)   # train stats only
+    Xtr_full, Xte_full, mean, std = standardize(X_trainval, X_test)   # train stats only
 
-    res = train_final(
+    res, model = train_final(
         Xtr_full, y_trainval, Xte_full, y_test,
         K=K_channels, n_classes=n_classes, hp=best['hp'],
         temp_sched=temp_sched, thresh_sched=thresh_sched,
@@ -233,6 +236,7 @@ def process_multi_subjects(loaded_raw, K_channels, subject='ALL'):
         n_subjects=len(subject_to_id),
         subject_embed_dim=cfg.SUBJECT_EMBED_DIM,
         use_subject_specific_selection=cfg.use_subject_specific_selection,
+        return_model=True,
     )
 
     print(f'{log}[test] init {cfg.INIT_SEED}: train_acc={res["train_acc"]:.3f} '
@@ -259,6 +263,29 @@ def process_multi_subjects(loaded_raw, K_channels, subject='ALL'):
     }
     json.dump(result, open(result_path, 'w'), indent=2)
     print(f'{log}saved -> {result_path.name}\n')
+
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'model_kwargs': {
+            'input_dim': [int(Xtr_full.shape[1]), int(Xtr_full.shape[2])],
+            'M': int(K_channels),
+            'output_dim': int(n_classes),
+            'use_subject_embedding': True,
+            'n_subjects': int(len(subject_to_id)),
+            'subject_embed_dim': int(cfg.SUBJECT_EMBED_DIM),
+            'use_subject_specific_selection': bool(cfg.use_subject_specific_selection),
+        },
+        'subject_to_id': subject_to_id,
+        'classes': classes.tolist(),
+        'standardize_mean': mean,
+        'standardize_std': std,
+        'best_hp': best['hp'],
+        'split_seed': int(cfg.SPLIT_SEED),
+        'init_seed': int(cfg.INIT_SEED),
+        'dataset_tag': subject,
+        'k_channels': int(K_channels),
+    }, ckpt_path)
+    print(f'{log}checkpoint -> {ckpt_path.name}\n')
     return result
 
 def process_data(X, y, K_channels, subject=None):
@@ -266,7 +293,7 @@ def process_data(X, y, K_channels, subject=None):
     device = torch.device(cfg.device if torch.cuda.is_available() else 'cpu')
 
     n_classes = len(np.unique(y))
-    cv_path, result_path = out_paths(subject, K_channels)
+    cv_path, result_path, ckpt_path = out_paths(subject, K_channels)
 
     X_trainval, X_test, y_trainval, y_test = train_test_split(
         X, y, test_size=cfg.TEST_SIZE, stratify=y, random_state=cfg.SPLIT_SEED)
@@ -336,13 +363,14 @@ def process_data(X, y, K_channels, subject=None):
               f'selection may not have converged')
 
     # ---------------- final model at INIT_SEED ----------------------------
-    Xtr_full, Xte_full, _, _ = standardize(X_trainval, X_test)   # train stats only
+    Xtr_full, Xte_full, mean, std = standardize(X_trainval, X_test)   # train stats only
 
-    res = train_final(
+    res, model = train_final(
         Xtr_full, y_trainval, Xte_full, y_test,
         K=K_channels, n_classes=n_classes, hp=best['hp'],
         temp_sched=temp_sched, thresh_sched=thresh_sched,
         device=device, seed=cfg.INIT_SEED,
+        return_model=True,
     )
 
     print(f'{log}[test] init {cfg.INIT_SEED}: train_acc={res["train_acc"]:.3f} '
@@ -365,6 +393,29 @@ def process_data(X, y, K_channels, subject=None):
     }
     json.dump(result, open(result_path, 'w'), indent=2)
     print(f'{log}saved -> {result_path.name}\n')
+
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'model_kwargs': {
+            'input_dim': [int(Xtr_full.shape[1]), int(Xtr_full.shape[2])],
+            'M': int(K_channels),
+            'output_dim': int(n_classes),
+            'use_subject_embedding': False,
+            'n_subjects': None,
+            'subject_embed_dim': 0,
+            'use_subject_specific_selection': False,
+        },
+        'subject_to_id': None,
+        'classes': list(range(n_classes)),
+        'standardize_mean': mean,
+        'standardize_std': std,
+        'best_hp': best['hp'],
+        'split_seed': int(cfg.SPLIT_SEED),
+        'init_seed': int(cfg.INIT_SEED),
+        'dataset_tag': subject or cfg.DATASET_TAG,
+        'k_channels': int(K_channels),
+    }, ckpt_path)
+    print(f'{log}checkpoint -> {ckpt_path.name}\n')
     return result
 
 if __name__ == "__main__":

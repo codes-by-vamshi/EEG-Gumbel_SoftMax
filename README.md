@@ -72,6 +72,7 @@ If you don’t have a GPU, set `device = "cpu"` in `config.py` (the code also fa
 Runs write JSON files to `results/`:
 - `cv_<dataset>_M<K>_split<SPLIT_SEED>.json`: CV results (cached per split).
 - `run_<dataset>_M<K>_split<SPLIT_SEED>_init<INIT_SEED>.json`: final run metrics.
+- `model_<dataset>_M<K>_split<SPLIT_SEED>_init<INIT_SEED>.pt`: PyTorch checkpoint (weights + metadata for inference).
 
 When `use_subject_embedding = True` (global multi-subject run), output filenames use `ALL` as the dataset identifier.
 
@@ -80,6 +81,25 @@ The final run JSON includes:
 - `selected_channels` (0-based channel indices)
 - `confusion_matrix`
 - selection diagnostics like `mean_entropy` and `n_unique`
+
+## Inference
+
+Use `inference.py` with the `.pt` checkpoint and an `X.npy`.
+
+Per-subject model (no subject id needed):
+```
+python inference.py --ckpt results/model_<subject>_M<K>_split<SPLIT_SEED>_init<INIT_SEED>.pt --x X.npy
+```
+
+Global multi-subject model (subject id required):
+```
+python inference.py --ckpt results/model_ALL_M<K>_split<SPLIT_SEED>_init<INIT_SEED>.pt --x X.npy --subject A2
+```
+
+You can also pass an integer id:
+```
+python inference.py --ckpt results/model_ALL_M<K>_split<SPLIT_SEED>_init<INIT_SEED>.pt --x X.npy --subject-id 0
+```
 
 ## Repo layout
 
