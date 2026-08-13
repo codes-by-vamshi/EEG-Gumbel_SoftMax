@@ -8,6 +8,26 @@ from train_utils import exp_decay, standardize, grid_combos, print_confusion_mat
 import json
 from training import train_one_fold, train_final
 
+def _hp_tag(hp):
+    def fmt(v):
+        if isinstance(v, float):
+            return f"{v:g}"
+        return str(v)
+    return "_".join(f"{k}{fmt(hp[k])}" for k in sorted(hp.keys()))
+
+def _log_plot_paths(base, hp=None, fold=None, kind="cv"):
+    out = Path(cfg.OUT_DIR)
+    parts = [kind, base]
+    if hp is not None:
+        parts.append(_hp_tag(hp))
+    if fold is not None:
+        parts.append(f"fold{fold}")
+    name = "__".join(parts)
+    return (
+        out / "logs" / f"{name}.jsonl",
+        out / "plots" / f"{name}.png",
+    )
+
 def load_subject(root, subject):
     """Format 2: root/<subject>/X.npy, y.npy"""
     d = Path(root) / subject
@@ -142,6 +162,7 @@ def process_multi_subjects(loaded_raw, K_channels, subject='ALL'):
     n_classes = len(classes)
     variant = f'emb{cfg.SUBJECT_EMBED_DIM}_subsel{int(cfg.use_subject_specific_selection)}'
     cv_path, result_path, ckpt_path = out_paths(subject, K_channels, variant=variant)
+    base = Path(cv_path).stem.replace("cv_", "")
 
     (X_trainval, y_trainval, subj_trainval,
      X_test, y_test, subj_test,
@@ -173,6 +194,7 @@ def process_multi_subjects(loaded_raw, K_channels, subject='ALL'):
                 X_tr, X_va, _, _ = standardize(X_trainval[tr_idx], X_trainval[va_idx])
                 y_tr, y_va = y_trainval[tr_idx], y_trainval[va_idx]
                 subj_tr, subj_va = subj_trainval[tr_idx], subj_trainval[va_idx]
+                log_path, plot_path = _log_plot_paths(base, hp=hp, fold=fold, kind="cv")
 
                 val_acc, mean_H, n_unique = train_one_fold(
                     X_tr, y_tr, X_va, y_va,
@@ -185,6 +207,9 @@ def process_multi_subjects(loaded_raw, K_channels, subject='ALL'):
                     subject_embed_dim=cfg.SUBJECT_EMBED_DIM,
                     use_subject_specific_selection=cfg.use_subject_specific_selection,
                     subject_names_by_id=subject_names_by_id,
+                    log_jsonl_path=str(log_path),
+                    plot_path=str(plot_path),
+                    run_name=f"{base} { _hp_tag(hp) } fold{fold}",
                 )
                 accs.append(val_acc)
                 entropies.append(mean_H)
@@ -232,6 +257,7 @@ def process_multi_subjects(loaded_raw, K_channels, subject='ALL'):
     # ---------------- final model at INIT_SEED ----------------------------
     Xtr_full, Xte_full, mean, std = standardize(X_trainval, X_test)   # train stats only
 
+    final_log, final_plot = _log_plot_paths(base, hp=best['hp'], fold=None, kind="final")
     res, model = train_final(
         Xtr_full, y_trainval, Xte_full, y_test,
         K=K_channels, n_classes=n_classes, hp=best['hp'],
@@ -243,6 +269,9 @@ def process_multi_subjects(loaded_raw, K_channels, subject='ALL'):
         subject_embed_dim=cfg.SUBJECT_EMBED_DIM,
         use_subject_specific_selection=cfg.use_subject_specific_selection,
         return_model=True,
+        log_jsonl_path=str(final_log),
+        plot_path=str(final_plot),
+        run_name=f"{base} { _hp_tag(best['hp']) } final",
     )
 
     print(f'{log}[test] init {cfg.INIT_SEED}: train_acc={res["train_acc"]:.3f} '
@@ -338,6 +367,7 @@ def process_data(X, y, K_channels, subject=None):
 
     n_classes = len(np.unique(y))
     cv_path, result_path, ckpt_path = out_paths(subject, K_channels, variant=None)
+    base = Path(cv_path).stem.replace("cv_", "")
 
     X_trainval, X_test, y_trainval, y_test = train_test_split(
         X, y, test_size=cfg.TEST_SIZE, stratify=y, random_state=cfg.SPLIT_SEED)
@@ -365,12 +395,16 @@ def process_data(X, y, K_channels, subject=None):
             for fold, (tr_idx, va_idx) in enumerate(skf.split(X_trainval, y_trainval)):
                 X_tr, X_va, _, _ = standardize(X_trainval[tr_idx], X_trainval[va_idx])
                 y_tr, y_va = y_trainval[tr_idx], y_trainval[va_idx]
+                log_path, plot_path = _log_plot_paths(base, hp=hp, fold=fold, kind="cv")
 
                 val_acc, mean_H, n_unique = train_one_fold(
                     X_tr, y_tr, X_va, y_va,
                     K=K_channels, n_classes=n_classes, hp=hp,
                     temp_sched=temp_sched, thresh_sched=thresh_sched,
                     device=device, seed=cfg.SPLIT_SEED,      # NOT init seed
+                    log_jsonl_path=str(log_path),
+                    plot_path=str(plot_path),
+                    run_name=f"{base} { _hp_tag(hp) } fold{fold}",
                 )
                 accs.append(val_acc)
                 entropies.append(mean_H)
@@ -409,12 +443,16 @@ def process_data(X, y, K_channels, subject=None):
     # ---------------- final model at INIT_SEED ----------------------------
     Xtr_full, Xte_full, mean, std = standardize(X_trainval, X_test)   # train stats only
 
+    final_log, final_plot = _log_plot_paths(base, hp=best['hp'], fold=None, kind="final")
     res, model = train_final(
         Xtr_full, y_trainval, Xte_full, y_test,
         K=K_channels, n_classes=n_classes, hp=best['hp'],
         temp_sched=temp_sched, thresh_sched=thresh_sched,
         device=device, seed=cfg.INIT_SEED,
         return_model=True,
+        log_jsonl_path=str(final_log),
+        plot_path=str(final_plot),
+        run_name=f"{base} { _hp_tag(best['hp']) } final",
     )
 
     print(f'{log}[test] init {cfg.INIT_SEED}: train_acc={res["train_acc"]:.3f} '

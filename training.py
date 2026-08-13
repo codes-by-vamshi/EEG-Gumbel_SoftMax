@@ -11,6 +11,51 @@ except Exception:  # pragma: no cover
     def trange(*args, **kwargs):
         return range(*args)
 
+def _append_jsonl(path, record):
+    if path is None:
+        return
+    import json
+    from pathlib import Path
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'a') as f:
+        f.write(json.dumps(record) + "\n")
+
+def _save_loss_plot(path, epochs, train_loss, val_loss=None, val_acc=None, title=None):
+    if path is None:
+        return
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        return
+    from pathlib import Path
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax1 = plt.subplots(figsize=(7, 4))
+    ax1.plot(epochs, train_loss, label="train_loss")
+    if val_loss is not None:
+        ax1.plot(epochs, val_loss, label="val_loss")
+    ax1.set_xlabel("epoch")
+    ax1.set_ylabel("loss")
+    ax1.grid(True, alpha=0.3)
+
+    if val_acc is not None:
+        ax2 = ax1.twinx()
+        ax2.plot(epochs, val_acc, color="tab:green", label="val_acc", alpha=0.8)
+        ax2.set_ylabel("acc")
+        lines, labels = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines + lines2, labels + labels2, loc="best")
+    else:
+        ax1.legend(loc="best")
+
+    if title:
+        ax1.set_title(title)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
 
 def _build(N, T, K, n_classes, lr, device,
            use_subject_embedding=False, n_subjects=None, subject_embed_dim=0,
@@ -74,7 +119,10 @@ def train_one_fold(X_tr, y_tr, X_va, y_va, K, n_classes, hp,
                    subj_tr=None, subj_va=None,
                    use_subject_embedding=False, n_subjects=None, subject_embed_dim=0,
                    use_subject_specific_selection=False,
-                   subject_names_by_id=None):
+                   subject_names_by_id=None,
+                   log_jsonl_path=None,
+                   plot_path=None,
+                   run_name=None):
     """Train one SelectionNet on a fold. Returns (val_acc, mean_entropy, n_unique)."""
     torch.manual_seed(seed)
     N, T = X_tr.shape[1], X_tr.shape[2]
@@ -94,6 +142,7 @@ def train_one_fold(X_tr, y_tr, X_va, y_va, K, n_classes, hp,
     best_state = None
 
     epoch_iter = trange(cfg.MAX_EPOCHS, desc="epoch", leave=False)
+    epochs, tr_losses, va_losses, va_accs = [], [], [], []
     for epoch in epoch_iter:
         model.set_temperature(temp_sched[epoch].to(device))
         model.set_thresh(thresh_sched[epoch])
@@ -146,6 +195,25 @@ def train_one_fold(X_tr, y_tr, X_va, y_va, K, n_classes, hp,
         except Exception:
             pass
 
+        epochs.append(int(epoch))
+        tr_losses.append(float(tr_loss))
+        va_losses.append(float(val_loss))
+        va_accs.append(float(val_acc))
+        record = {
+            "run": run_name,
+            "epoch": int(epoch),
+            "train_loss": float(tr_loss),
+            "val_loss": float(val_loss),
+            "val_acc": float(val_acc),
+            "mean_entropy": float(mean_H),
+        }
+        if subj_va is not None and n_subjects is not None:
+            record["val_acc_by_subject"] = {
+                (subject_names_by_id[i] if subject_names_by_id else str(i)): (None if np.isnan(accs[i]) else float(accs[i]))
+                for i in range(int(n_subjects))
+            }
+        _append_jsonl(log_jsonl_path, record)
+
         # ---- early stopping: only once selection has converged ----
         if mean_H <= cfg.FIXED['entropy_lim'] and val_loss > prev_val - cfg.FIXED['stop_delta']:
             patience += 1
@@ -163,6 +231,14 @@ def train_one_fold(X_tr, y_tr, X_va, y_va, K, n_classes, hp,
     # ---- final fold metrics ----
     val_acc, _, _ = _evaluate(model, X_va, y_va, device, subj=subj_va)
     H, s, _ = model.monitor()
+    _save_loss_plot(
+        plot_path,
+        epochs=[e + 1 for e in epochs],
+        train_loss=tr_losses,
+        val_loss=va_losses,
+        val_acc=va_accs,
+        title=run_name,
+    )
     return val_acc, H.mean().item(), int(torch.unique(s - 1).numel())
 
 def train_final(X_tr, y_tr, X_te, y_te, K, n_classes, hp,
@@ -170,7 +246,10 @@ def train_final(X_tr, y_tr, X_te, y_te, K, n_classes, hp,
                 subj_tr=None, subj_te=None,
                 use_subject_embedding=False, n_subjects=None, subject_embed_dim=0,
                 use_subject_specific_selection=False,
-                return_model=False):
+                return_model=False,
+                log_jsonl_path=None,
+                plot_path=None,
+                run_name=None):
     """Full-length training on trainval, no early stopping. Returns a dict (and optionally the model)."""
     torch.manual_seed(seed)
     N, T = X_tr.shape[1], X_tr.shape[2]
@@ -186,6 +265,7 @@ def train_final(X_tr, y_tr, X_te, y_te, K, n_classes, hp,
     tr_loader = _loader(X_tr, y_tr, subj=subj_tr)
 
     epoch_iter = trange(cfg.MAX_EPOCHS, desc="epoch", leave=False)
+    epochs, tr_losses = [], []
     for epoch in epoch_iter:
         model.set_temperature(temp_sched[epoch].to(device))
         model.set_thresh(thresh_sched[epoch])
@@ -211,6 +291,14 @@ def train_final(X_tr, y_tr, X_te, y_te, K, n_classes, hp,
             epoch_iter.set_postfix({"tr_loss": f"{(running / max(seen, 1)):.3f}"})
         except Exception:
             pass
+        tr_loss = float(running / max(seen, 1))
+        epochs.append(int(epoch))
+        tr_losses.append(tr_loss)
+        _append_jsonl(log_jsonl_path, {
+            "run": run_name,
+            "epoch": int(epoch),
+            "train_loss": tr_loss,
+        })
 
     train_acc, _, _ = _evaluate(model, X_tr, y_tr, device, subj=subj_tr)
     test_acc, _, te_pred = _evaluate(model, X_te, y_te, device, subj=subj_te)
@@ -218,6 +306,15 @@ def train_final(X_tr, y_tr, X_te, y_te, K, n_classes, hp,
     H, sel, _ = model.monitor()
     channels = sorted(int(c) for c in torch.unique(sel - 1).cpu().numpy())
     cm = confusion_matrix(y_te, te_pred, labels=list(range(n_classes)))
+
+    _save_loss_plot(
+        plot_path,
+        epochs=[e + 1 for e in epochs],
+        train_loss=tr_losses,
+        val_loss=None,
+        val_acc=None,
+        title=run_name,
+    )
 
     return {
         'train_acc': train_acc,

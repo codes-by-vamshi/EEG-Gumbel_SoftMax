@@ -76,6 +76,10 @@ Runs write JSON files to `results/`:
 
 When `use_subject_embedding = True` (global multi-subject run), output filenames use `ALL` as the dataset identifier and include a variant tag (embedding dimension + whether selection is subject-specific).
 
+Training also writes:
+- `results/logs/*.jsonl`: per-epoch metrics (train/val loss, val acc, entropy; plus per-subject val acc in multi-subject CV).
+- `results/plots/*.png`: loss curves (and val acc overlay when available).
+
 The final run JSON includes:
 - `train_acc`, `test_acc`
 - `selected_channels` (0-based channel indices)
