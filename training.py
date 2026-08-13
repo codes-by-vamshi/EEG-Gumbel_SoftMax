@@ -8,7 +8,8 @@ import config as cfg
 try:
     from tqdm import trange
 except Exception:  # pragma: no cover
-    trange = range
+    def trange(*args, **kwargs):
+        return range(*args)
 
 
 def _build(N, T, K, n_classes, lr, device,

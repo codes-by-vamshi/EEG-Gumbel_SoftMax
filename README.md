@@ -74,7 +74,7 @@ Runs write JSON files to `results/`:
 - `run_<dataset>_M<K>_split<SPLIT_SEED>_init<INIT_SEED>.json`: final run metrics.
 - `model_<dataset>_M<K>_split<SPLIT_SEED>_init<INIT_SEED>.pt`: PyTorch checkpoint (weights + metadata for inference).
 
-When `use_subject_embedding = True` (global multi-subject run), output filenames use `ALL` as the dataset identifier.
+When `use_subject_embedding = True` (global multi-subject run), output filenames use `ALL` as the dataset identifier and include a variant tag (embedding dimension + whether selection is subject-specific).
 
 The final run JSON includes:
 - `train_acc`, `test_acc`

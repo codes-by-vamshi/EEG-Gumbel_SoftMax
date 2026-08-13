@@ -51,11 +51,13 @@ def check_data(X, y, K, subject=None):
     if K > N:
         raise ValueError(f"{who}: K={K} exceeds n_channels={N}")
 
-def out_paths(subject, K):
-    """(cv_cache, result, checkpoint) — CV is keyed by split only, so inits share it."""
+def out_paths(subject, K, variant=None):
+    """(cv_cache, result, checkpoint) — filenames include a variant tag when provided."""
     Path(cfg.OUT_DIR).mkdir(parents=True, exist_ok=True)
     base = (f'{subject}_M{K}_split{cfg.SPLIT_SEED}' if subject
         else f'{cfg.DATASET_TAG}_M{K}_split{cfg.SPLIT_SEED}')
+    if variant:
+        base = f'{base}_{variant}'
     return (
         Path(cfg.OUT_DIR) / f'cv_{base}.json',
         Path(cfg.OUT_DIR) / f'run_{base}_init{cfg.INIT_SEED}.json',
@@ -138,7 +140,8 @@ def process_multi_subjects(loaded_raw, K_channels, subject='ALL'):
         loaded.append((subject_name, X, y_mapped.astype(np.int64)))
 
     n_classes = len(classes)
-    cv_path, result_path, ckpt_path = out_paths(subject, K_channels)
+    variant = f'emb{cfg.SUBJECT_EMBED_DIM}_subsel{int(cfg.use_subject_specific_selection)}'
+    cv_path, result_path, ckpt_path = out_paths(subject, K_channels, variant=variant)
 
     (X_trainval, y_trainval, subj_trainval,
      X_test, y_test, subj_test,
@@ -327,7 +330,7 @@ def process_data(X, y, K_channels, subject=None):
     device = torch.device(cfg.device if torch.cuda.is_available() else 'cpu')
 
     n_classes = len(np.unique(y))
-    cv_path, result_path, ckpt_path = out_paths(subject, K_channels)
+    cv_path, result_path, ckpt_path = out_paths(subject, K_channels, variant=None)
 
     X_trainval, X_test, y_trainval, y_test = train_test_split(
         X, y, test_size=cfg.TEST_SIZE, stratify=y, random_state=cfg.SPLIT_SEED)
