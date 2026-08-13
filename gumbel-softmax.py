@@ -145,6 +145,7 @@ def process_multi_subjects(loaded_raw, K_channels, subject='ALL'):
      subject_to_id) = _subjectwise_split_and_concat(
         loaded, test_size=cfg.TEST_SIZE, seed=cfg.SPLIT_SEED
     )
+    subject_names_by_id = [s for s, _ in sorted(subject_to_id.items(), key=lambda kv: kv[1])]
 
     temp_sched = exp_decay(cfg.FIXED['start_temp'], cfg.FIXED['end_temp'],
                            cfg.MAX_EPOCHS, cfg.ANNEAL_EPOCHS)
@@ -180,6 +181,7 @@ def process_multi_subjects(loaded_raw, K_channels, subject='ALL'):
                     n_subjects=len(subject_to_id),
                     subject_embed_dim=cfg.SUBJECT_EMBED_DIM,
                     use_subject_specific_selection=cfg.use_subject_specific_selection,
+                    subject_names_by_id=subject_names_by_id,
                 )
                 accs.append(val_acc)
                 entropies.append(mean_H)

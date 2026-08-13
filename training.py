@@ -5,6 +5,11 @@ from sklearn.metrics import confusion_matrix
 from SelectionNet import SelectionNet
 import config as cfg
 
+try:
+    from tqdm import trange
+except Exception:  # pragma: no cover
+    trange = range
+
 
 def _build(N, T, K, n_classes, lr, device,
            use_subject_embedding=False, n_subjects=None, subject_embed_dim=0,
@@ -39,6 +44,14 @@ def _loader(X, y, subj=None, shuffle=True):
     return torch.utils.data.DataLoader(ds, batch_size=cfg.FIXED['batch_size'],
                                        shuffle=shuffle)
 
+def _per_subject_acc(y_true, y_pred, subj_ids, n_subjects):
+    out = np.full(int(n_subjects), np.nan, dtype=np.float32)
+    for sid in range(int(n_subjects)):
+        idx = np.flatnonzero(subj_ids == sid)
+        if len(idx):
+            out[sid] = float(np.mean(y_pred[idx] == y_true[idx]))
+    return out
+
 
 @torch.no_grad()
 def _evaluate(model, X, y, device, subj=None):
@@ -59,7 +72,8 @@ def train_one_fold(X_tr, y_tr, X_va, y_va, K, n_classes, hp,
                    temp_sched, thresh_sched, device, seed,
                    subj_tr=None, subj_va=None,
                    use_subject_embedding=False, n_subjects=None, subject_embed_dim=0,
-                   use_subject_specific_selection=False):
+                   use_subject_specific_selection=False,
+                   subject_names_by_id=None):
     """Train one SelectionNet on a fold. Returns (val_acc, mean_entropy, n_unique)."""
     torch.manual_seed(seed)
     N, T = X_tr.shape[1], X_tr.shape[2]
@@ -78,12 +92,15 @@ def train_one_fold(X_tr, y_tr, X_va, y_va, K, n_classes, hp,
     patience = 0
     best_state = None
 
-    for epoch in range(cfg.MAX_EPOCHS):
+    epoch_iter = trange(cfg.MAX_EPOCHS, desc="epoch", leave=False)
+    for epoch in epoch_iter:
         model.set_temperature(temp_sched[epoch].to(device))
         model.set_thresh(thresh_sched[epoch])
 
         # ---- train ----
         model.train()
+        running = 0.0
+        seen = 0
         for batch in tr_loader:
             if len(batch) == 2:
                 data, labels = batch
@@ -95,12 +112,38 @@ def train_one_fold(X_tr, y_tr, X_va, y_va, K, n_classes, hp,
             opt.zero_grad()
             sup = ce(model(data) if subj is None else model(data, subject_ids=subj), labels)
             reg = model.regularizer(hp['lamba'], hp['weight_decay'])
-            (sup + reg).backward()
+            loss = sup + reg
+            loss.backward()
             opt.step()
+            running += float(loss.detach().item()) * int(labels.shape[0])
+            seen += int(labels.shape[0])
 
         # ---- validate ----
-        val_acc, val_loss, _ = _evaluate(model, X_va, y_va, device, subj=subj_va)
+        val_acc, val_loss, va_pred = _evaluate(model, X_va, y_va, device, subj=subj_va)
         mean_H = model.monitor()[0].mean().item()
+        tr_loss = running / max(seen, 1)
+
+        postfix = {
+            "tr_loss": f"{tr_loss:.3f}",
+            "va_acc": f"{val_acc:.3f}",
+            "va_loss": f"{val_loss:.3f}",
+            "H": f"{mean_H:.3f}",
+        }
+        if subj_va is not None and n_subjects is not None:
+            accs = _per_subject_acc(y_va, va_pred, subj_va, n_subjects)
+            if subject_names_by_id is None:
+                subj_str = " ".join(f"{i}:{a:.2f}" for i, a in enumerate(accs) if not np.isnan(a))
+            else:
+                subj_str = " ".join(
+                    f"{subject_names_by_id[i]}:{float(accs[i]):.2f}"
+                    for i in range(min(len(subject_names_by_id), len(accs)))
+                    if not np.isnan(accs[i])
+                )
+            postfix["subj_va"] = subj_str
+        try:
+            epoch_iter.set_postfix(postfix)
+        except Exception:
+            pass
 
         # ---- early stopping: only once selection has converged ----
         if mean_H <= cfg.FIXED['entropy_lim'] and val_loss > prev_val - cfg.FIXED['stop_delta']:
@@ -141,10 +184,13 @@ def train_final(X_tr, y_tr, X_te, y_te, K, n_classes, hp,
     ce = torch.nn.CrossEntropyLoss()
     tr_loader = _loader(X_tr, y_tr, subj=subj_tr)
 
-    for epoch in range(cfg.MAX_EPOCHS):
+    epoch_iter = trange(cfg.MAX_EPOCHS, desc="epoch", leave=False)
+    for epoch in epoch_iter:
         model.set_temperature(temp_sched[epoch].to(device))
         model.set_thresh(thresh_sched[epoch])
         model.train()
+        running = 0.0
+        seen = 0
         for batch in tr_loader:
             if len(batch) == 2:
                 data, labels = batch
@@ -158,6 +204,12 @@ def train_final(X_tr, y_tr, X_te, y_te, K, n_classes, hp,
             loss = ce(out, labels) + model.regularizer(hp['lamba'], hp['weight_decay'])
             loss.backward()
             opt.step()
+            running += float(loss.detach().item()) * int(labels.shape[0])
+            seen += int(labels.shape[0])
+        try:
+            epoch_iter.set_postfix({"tr_loss": f"{(running / max(seen, 1)):.3f}"})
+        except Exception:
+            pass
 
     train_acc, _, _ = _evaluate(model, X_tr, y_tr, device, subj=subj_tr)
     test_acc, _, te_pred = _evaluate(model, X_te, y_te, device, subj=subj_te)
