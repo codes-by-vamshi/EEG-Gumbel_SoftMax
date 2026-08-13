@@ -252,6 +252,9 @@ def process_multi_subjects(loaded_raw, K_channels, subject='ALL'):
     print(f'{log}selected channels: {res["selected_channels"]}')
 
     # ---------------- per-subject test metrics ----------------------------
+    # Subject-level selected channels (only meaningful when selector is subject-specific).
+    id_to_subject = {i: s for s, i in subject_to_id.items()}
+    _, sel_s, _ = model.monitor()
     @torch.no_grad()
     def _predict(model, X, subj_ids, batch_size=128):
         Xt = torch.as_tensor(X).unsqueeze(1)
@@ -267,16 +270,20 @@ def process_multi_subjects(loaded_raw, K_channels, subject='ALL'):
 
     te_pred = _predict(model, Xte_full, subj_test)
     per_subject_test = {}
-    id_to_subject = {i: s for s, i in subject_to_id.items()}
     for sid in sorted(id_to_subject.keys()):
         sname = id_to_subject[sid]
         idx = np.flatnonzero(subj_test == sid)
         y_s = y_test[idx]
         p_s = te_pred[idx]
+        if isinstance(sel_s, torch.Tensor) and sel_s.ndim == 2:
+            sel_channels = sorted({int(c) - 1 for c in sel_s[int(sid)].detach().cpu().numpy()})
+        else:
+            sel_channels = list(res["selected_channels"])
         per_subject_test[sname] = {
             'subject_id': int(sid),
             'n_test': int(len(idx)),
             'test_acc': float(np.mean(p_s == y_s)) if len(idx) else None,
+            'selected_channels': sel_channels,
             'confusion_matrix': confusion_matrix(y_s, p_s, labels=list(range(n_classes))).tolist()
             if len(idx) else None,
         }
